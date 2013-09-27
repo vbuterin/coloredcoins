@@ -1,0 +1,22 @@
+{
+    "name": "coloredcoins",
+    "version": "0.0.1",
+    "description": "Basic colored coins implementation",
+    "dependencies": {
+        "underscore": "*",
+        "node-sx": ">= 0.0.17",
+        "async": "*",
+        "long-stack-traces": "*",
+        "crypto": "*",
+        "bitcoin": "*",
+        "express": "3.1.0"
+    },
+    "main": "main.js",
+    "author": "vbuterin",
+    "keywords": ["bitcoin", "crypto", "finance"],
+    "repository" : {                                                                      
+         "type": "git",                                                                    
+         "url": "https://github.com/vbuterin/coloredcoins.git"
+    },
+    "engines": { "node": "*" }
+}
