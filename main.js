@@ -77,8 +77,12 @@ m.mkgenesis = function(priv, addresses, metadata, cb) {
     }
     var t = {};
     async.waterfall([
-        // Get list of outputs
+        // Generate address from private key
         function(cb2) {
+            sx.addr(priv,sx.cbsetter(t,'from',cb2));
+        },
+        // Get list of outputs
+        function(__,cb2) {
             // Start off with given output addresses
             var outputs = addresses.map(function(a) { 
                 return { address: a, value: 10000 }
@@ -99,31 +103,27 @@ m.mkgenesis = function(priv, addresses, metadata, cb) {
             },eh(cb,function(maddrs) {
                 outputs = outputs.concat(maddrs.map(function(x) {
                     return { address: x, value: 10000 }
-                }));
-                cb2(null,outputs);
+                }))
+                .concat({ address: t.from, value: 10000 }); // Change address (mandatory)
+                sx.cbsetter(t,'outputs',cb2)(null,outputs);
             }));
         },
-        // Generate address from private key
-        function(outputs,cb2) {
-            console.log(outputs);
-            sx.addr(priv,eh(cb2,function(from) { cb2(null,outputs,from) }))
-        },
         // Make a transaction, ensuring that fee = 0.0001 * ceil(txsize / 1024 bytes)
-        function(outputs,from,cb2) {
-            sx.bci_history(from,eh(cb2,function(h) {
-                sx.send_to_outputs(h,outputs,0,eh(cb2,function(o) {
-                    sx.showtx(o.tx,eh(cb2,function(txobj) {
-                        cb2(null,o.utxo,o.tx,txobj);
-                    }));
+        function(__,cb2) {
+            sx.bci_history(t.from,eh(cb2,function(h) {
+                sx.send_to_outputs(h,t.outputs,t.outputs.length-1,eh(cb2,function(o) {
+                    cb2(null,o.utxo,o.tx);
                 }));
             }));
         },
         // Sign and broadcast
-        function(utxo,tx,txobj,cb2) {
+        function(utxo,tx,cb2) {
             console.log('signing');
             sx.sign_tx_inputs(tx,priv,utxo,eh(cb2,function(tx) {
-                m.sendtx(tx,cb2);
-                cb2(null,txobj);
+                sx.showtx(tx,eh(cb2,function(txobj) {
+                    m.sendtx(tx,cb2);
+                    cb2(null,txobj);
+                }));
             }));
         }
     ],cb);
@@ -309,7 +309,6 @@ m.send = function(txout,priv,auxpriv,to,metadata,cb) {
         if (auxpriv) sx.addr(auxpriv,sx.cbsetter(t,'auxaddress',cb2));
         else cb2();
     },function(_,cb2) {
-        console.log(5);
         var me = [{
             output: txout,
             value: t.txobj.outputs[parseInt(txout.substring(65))].value,
@@ -323,7 +322,6 @@ m.send = function(txout,priv,auxpriv,to,metadata,cb) {
         }
         else sx.cbsetter(t,'utxo',cb2)(null,me);
     },function(_,cb2) {
-        console.log(7);
         ms = [];
         for (var pos = 0; pos < metadata.length; pos += 20) {
             var mstr = metadata.substring(pos,pos+20);
@@ -333,7 +331,8 @@ m.send = function(txout,priv,auxpriv,to,metadata,cb) {
         sx.cbmap(ms,function(m,cb3) {
             sx.base58check_encode(binToHex(m),0,cb3);
         },eh(cb2,function(addrs) {
-            t.outs = [{ address: to, value: 10000 }]
+            t.outs = [{ address: to, value: 10000 },
+                      { address: t.auxaddress, value: 10000 }]
                      .concat(addrs.map(function(a) {
                         return { address: a, value: 10000 }
                      }));
@@ -347,7 +346,7 @@ m.send = function(txout,priv,auxpriv,to,metadata,cb) {
             return cb2("Not enough funds to pay fee");
         }
         else {
-            t.outs[0].value += in_value - out_value - fee;
+            t.outs[1].value += in_value - out_value - fee;
             console.log(t.utxo,t.outs);
             sx.mktx(t.utxo,t.outs,sx.cbsetter(t,'tx',cb2));
         }
@@ -358,9 +357,8 @@ m.send = function(txout,priv,auxpriv,to,metadata,cb) {
         console.log(t.newtx);
         sx.showtx(t.newtx,sx.cbsetter(t,'newtxobj',cb2));
     },function(_,cb2) {
-        var fail = cb2;
-        var success = function(r) { cb2(null, { response: r, tx: t.newtxobj }) };
-        m.sendtx(t.newtx,eh(fail,success));
+        m.sendtx(t.newtx,sx.noop);
+        cb2(null, t.newtxobj);
     }],cb);
 }
 
