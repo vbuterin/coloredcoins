@@ -93,10 +93,13 @@ m.mkgenesis = function(h, addresses, metadata, cb) {
                 while (mstr.length < 20) mstr += '\x00';
                 ms.push(mstr);
             }
+            console.log(ms);
             // Convert hash160s into addresses
             async.map(ms,function(m,cb3) {
+                console.log(m);
                 sx.base58check_encode(binToHex(m),0,cb3);
-            },eh(cb,function(maddrs) {
+            },eh(cb2,function(maddrs) {
+                console.log(maddrs);
                 outputs = outputs.concat(maddrs.map(function(x) {
                     return { address: x, value: 10000 }
                 }))
@@ -106,6 +109,7 @@ m.mkgenesis = function(h, addresses, metadata, cb) {
         },
         // Make a transaction, ensuring that fee = 0.0001 * ceil(txsize / 1024 bytes)
         function(__,cb2) {
+            console.log('donecc');
             sx.send_to_outputs(h,t.outputs,t.outputs.length-1,cb2);
         }
     ],cb);
