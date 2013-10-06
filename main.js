@@ -69,7 +69,7 @@ m.debugmode = 0;
 
 m.log = function(msg1, msg2, etc, priority) {
     var priority = arguments[arguments.length-1],
-        msgs = Array.prototype.slice.call(arguments,arguments.length-1);
+        msgs = Array.prototype.slice.call(arguments,0,arguments.length-1);
     if (m.debugmode >= priority) console.log.apply(console, msgs);
 }
 
