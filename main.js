@@ -71,16 +71,12 @@ m.sendtx = function(tx,cb) {
 // output n: 1111111111111111111114oLvT2
 // output n+1+: metadata
 
-m.mkgenesis = function(priv, addresses, metadata, cb) {
+m.mkgenesis = function(h, addresses, metadata, cb) {
     if (typeof addresses == 'string') {
         addresses = [addresses];
     }
     var t = {};
     async.waterfall([
-        // Generate address from private key
-        function(cb2) {
-            sx.addr(priv,sx.cbsetter(t,'from',cb2));
-        },
         // Get list of outputs
         function(__,cb2) {
             // Start off with given output addresses
@@ -98,7 +94,7 @@ m.mkgenesis = function(priv, addresses, metadata, cb) {
                 ms.push(mstr);
             }
             // Convert hash160s into addresses
-            sx.cbmap(ms,function(m,cb3) {
+            async.map(ms,function(m,cb3) {
                 sx.base58check_encode(binToHex(m),0,cb3);
             },eh(cb,function(maddrs) {
                 outputs = outputs.concat(maddrs.map(function(x) {
@@ -110,21 +106,7 @@ m.mkgenesis = function(priv, addresses, metadata, cb) {
         },
         // Make a transaction, ensuring that fee = 0.0001 * ceil(txsize / 1024 bytes)
         function(__,cb2) {
-            sx.bci_history(t.from,eh(cb2,function(h) {
-                sx.send_to_outputs(h,t.outputs,t.outputs.length-1,eh(cb2,function(o) {
-                    cb2(null,o.utxo,o.tx);
-                }));
-            }));
-        },
-        // Sign and broadcast
-        function(utxo,tx,cb2) {
-            console.log('signing');
-            sx.sign_tx_inputs(tx,priv,utxo,eh(cb2,function(tx) {
-                sx.showtx(tx,eh(cb2,function(txobj) {
-                    m.sendtx(tx,cb2);
-                    cb2(null,txobj);
-                }));
-            }));
+            sx.send_to_outputs(h,t.outputs,t.outputs.length-1,cb2);
         }
     ],cb);
 }
@@ -149,7 +131,7 @@ m.get_parent_helper = function(txobj,index,offset,cb) {
     var in_index = 0;
     console.log('q');
     // Get previous outputs of all inputs
-    sx.cbmap(txobj.inputs, m.get_prevout, eh(cb,function(prevtxobjs) {
+    async.map(txobj.inputs, m.get_prevout, eh(cb,function(prevtxobjs) {
         if (prevtxobjs[0] == "Coinbase") {
             return cb(null,null,null,null); //Coinbase
         }
@@ -183,7 +165,7 @@ m.get_spender = function(txobj,index,cb) {
 // inverse function of get_parent_helper
 m.get_child_helper = function(txobj,index,offset,cb) {
     m.get_spender(txobj,index,eh(cb,function(o) {
-        sx.cbmap(o.next_txobj.inputs,get_prevout,eh(cb,function(prevouts) {
+        async.map(o.next_txobj.inputs,get_prevout,eh(cb,function(prevouts) {
             var offset = prevouts.slice(0,o.index)
                                   .map(sx.getter('values'))
                                   .reduce(sx.add,0) + offset;
@@ -289,14 +271,14 @@ m.get_metadata = function(tx,cb) {
         var outaddrs = txobj.outputs.map(sx.getter('address')),
             zeropos = outaddrs.indexOf('1111111111111111111114oLvT2');
         if (zeropos == -1) return cb("No metadata");
-        else sx.cbmap(outaddrs.slice(zeropos+1),sx.decode_addr,eh(cb,function(hash160s) {
+        else async.map(outaddrs.slice(zeropos+1),sx.decode_addr,eh(cb,function(hash160s) {
             cb(null,hash160s.map(hexToBin).join(''));
         }));
     }));
 }
 
 // Send (empty everything in a privkey)
-m.send = function(txout,priv,auxpriv,to,metadata,cb) {
+m.mksend = function(txout,aux,to,change,metadata,cb) {
     var t = {};
     // Fetch transaction txout
     async.waterfall([function(cb2) {
@@ -304,31 +286,13 @@ m.send = function(txout,priv,auxpriv,to,metadata,cb) {
     },function(_,cb2) {
         sx.showtx(t.tx,sx.cbsetter(t,'txobj',cb2));
     },function(_,cb2) {
-        sx.addr(priv,sx.cbsetter(t,'fromaddress',cb2));
-    },function(_,cb2) {
-        if (auxpriv) sx.addr(auxpriv,sx.cbsetter(t,'auxaddress',cb2));
-        else cb2();
-    },function(_,cb2) {
-        var me = [{
-            output: txout,
-            value: t.txobj.outputs[parseInt(txout.substring(65))].value,
-            address: t.fromaddress
-        }];
-        if (auxpriv) {
-            sx.bci_history(t.auxaddress,eh(cb2,function(h) {
-                var utxo = h.filter(function(x) { return !x.spend });
-                sx.cbsetter(t,'utxo',cb2)(null,me.concat(sx.txodiff(utxo,me)));
-            }));
-        }
-        else sx.cbsetter(t,'utxo',cb2)(null,me);
-    },function(_,cb2) {
         ms = [];
         for (var pos = 0; pos < metadata.length; pos += 20) {
             var mstr = metadata.substring(pos,pos+20);
             while (mstr.length < 20) mstr += '\x00';
             ms.push(mstr);
         }
-        sx.cbmap(ms,function(m,cb3) {
+        async.map(ms,function(m,cb3) {
             sx.base58check_encode(binToHex(m),0,cb3);
         },eh(cb2,function(addrs) {
             t.outs = [{ address: to, value: 10000 },
@@ -336,9 +300,39 @@ m.send = function(txout,priv,auxpriv,to,metadata,cb) {
                      .concat(addrs.map(function(a) {
                         return { address: a, value: 10000 }
                      }));
-            sx.mktx(t.utxo,t.outs,sx.cbsetter(t,'testtx',cb2))
+            cb2();
         }));
+    },function(cb2) {
+        // Try to make a transaction with the desired output set. Sometimes,
+        // that stransaction might be large enough to warrant a fee above
+        // 0.0001 BTC, in which case we might need to bring in more inputs
+        // to cover the full amount, so all in all we might need to increase
+        // the size of the transaction several times
+        var me = [{
+            output: txout,
+            value: t.txobj.outputs[parseInt(txout.substring(65))].value,
+        }];
+        var fee_multiplier = 1,
+            fee,
+            out_value = t.outs.map(m.getter('value')).reduce(m.plus,0);
+        sx.cbuntil(function(cb2) {
+            fee = fee_multiplier * 10000;
+            m.get_enough_utxo_from_history(h,out_value + fee,eh(cb2,function(utxo) {
+                t.utxo = me.concat(utxo);
+                m.mktx(t.utxo,outputs,eh(cb2,function(tx) {
+                    t.testtx = tx;
+                    if (Math.ceil((tx.length+2) / 2048) > fee_multiplier) {
+                        console.log(fee_multiplier);
+                        fee_multiplier = Math.ceil(tx.length / 2048);
+                        return cb2(null,false);
+                    }
+                    return cb2(null,true);
+                }));
+            }));    
+        },cb2);
     },function(_,cb2) {
+        // Create a new transaction just like the successful one but with
+        // the extra funds redirected to the change address
         var in_value = t.utxo.map(sx.getter('value')).reduce(sx.plus,0),
             out_value = t.outs.map(sx.getter('value')).reduce(sx.plus,0),
             fee = Math.ceil(t.testtx.length / 2048) * 10000;
@@ -350,16 +344,8 @@ m.send = function(txout,priv,auxpriv,to,metadata,cb) {
             console.log(t.utxo,t.outs);
             sx.mktx(t.utxo,t.outs,sx.cbsetter(t,'tx',cb2));
         }
-    },function(_,cb2) {
-        var privs = auxpriv ? [priv,auxpriv] : [priv];
-        sx.sign_tx_inputs(t.tx,privs,t.utxo,sx.cbsetter(t,'newtx',cb2));
-    },function(_,cb2) {
-        console.log(t.newtx);
-        sx.showtx(t.newtx,sx.cbsetter(t,'newtxobj',cb2));
-    },function(_,cb2) {
-        m.sendtx(t.newtx,sx.noop);
-        cb2(null, t.newtxobj);
-    }],cb);
+
+    }],eh(cb,function() { cb(null,{tx: t.tx, utxo: t.utxo}) }));
 }
 
 module.exports = m;
