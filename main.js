@@ -65,6 +65,13 @@ m.sendtx = function(tx,cb) {
     sx.electrum_pushtx(tx,eh(fail,success));
 }
 
+m.debugmode = 0;
+
+m.log = function(msg1, msg2, etc, priority) {
+    var priority = arguments[arguments.length-1],
+        msgs = Array.prototype.slice.call(arguments,arguments.length-1);
+    if (debugmode >= priority) console.log.apply(console, msgs);
+}
 
 // Format
 // output 0-(n-1): addresses for colored coins
@@ -78,14 +85,17 @@ m.mkgenesis = function(h, addresses, metadata, cb) {
     var t = {};
     async.waterfall([
         // Get list of outputs
-        function(__,cb2) {
+        function(cb2) {
             // Start off with given output addresses
+            m.log("Making genesis",1);
             var outputs = addresses.map(function(a) { 
                 return { address: a, value: 10000 }
             }).concat([
                 // Zero address to indentify genesis transactions
                 { address: '1111111111111111111114oLvT2', value: 10000 }
             ]);
+            m.log("outputs",outputs,2);
+            console.log("Generating outputs");
             // Encode metadata into hash160s
             var ms = [];
             for (var pos = 0; pos < metadata.length; pos += 20) {
@@ -93,13 +103,12 @@ m.mkgenesis = function(h, addresses, metadata, cb) {
                 while (mstr.length < 20) mstr += '\x00';
                 ms.push(mstr);
             }
-            console.log(ms);
+            m.log("metadata",ms,2);
             // Convert hash160s into addresses
             async.map(ms,function(m,cb3) {
-                console.log(m);
                 sx.base58check_encode(binToHex(m),0,cb3);
             },eh(cb2,function(maddrs) {
-                console.log(maddrs);
+                m.log("metadata addresses",maddrs,3);
                 outputs = outputs.concat(maddrs.map(function(x) {
                     return { address: x, value: 10000 }
                 }))
@@ -109,7 +118,7 @@ m.mkgenesis = function(h, addresses, metadata, cb) {
         },
         // Make a transaction, ensuring that fee = 0.0001 * ceil(txsize / 1024 bytes)
         function(__,cb2) {
-            console.log('donecc');
+            m.log("Constructing transaction",2);
             sx.send_to_outputs(h,t.outputs,t.outputs.length-1,cb2);
         }
     ],cb);
@@ -283,12 +292,21 @@ m.get_metadata = function(tx,cb) {
 
 // Send (empty everything in a privkey)
 m.mksend = function(txout,aux,to,change,metadata,cb) {
-    var t = {};
+    var scope = {};
     // Fetch transaction txout
     async.waterfall([function(cb2) {
-        m.fetchtx(txout.substring(0,64),sx.cbsetter(t,'tx',cb2));
-    },function(_,cb2) {
-        sx.showtx(t.tx,sx.cbsetter(t,'txobj',cb2));
+        m.log("Generating sending transaction",1);
+        // txhash:index format
+        if (typeof txout == "string") {
+            m.fetchtx(txout.substring(0,64),eh(cb2,function(tx) {
+                sx.showtx(tx,eh(cb2,function(txobj) {
+                    scope.spendee = txobj.outputs[parseInt(txout.substring(65))].value;
+                    cb2(null,true);
+                }));
+            }));
+        }
+        // txout format
+        else { scope.spendee = txout; }
     },function(_,cb2) {
         ms = [];
         for (var pos = 0; pos < metadata.length; pos += 20) {
@@ -296,14 +314,16 @@ m.mksend = function(txout,aux,to,change,metadata,cb) {
             while (mstr.length < 20) mstr += '\x00';
             ms.push(mstr);
         }
+        m.log("Metadata:",ms,3);
         async.map(ms,function(m,cb3) {
             sx.base58check_encode(binToHex(m),0,cb3);
         },eh(cb2,function(addrs) {
-            t.outs = [{ address: to, value: 10000 },
-                      { address: t.auxaddress, value: 10000 }]
-                     .concat(addrs.map(function(a) {
-                        return { address: a, value: 10000 }
-                     }));
+            m.log("Metadata addresses:",maddrs,2);
+            scope.outputs = [{ address: to, value: 10000 },
+                             { address: t.auxaddress, value: 10000 }]
+                            .concat(addrs.map(function(a) {
+                                return { address: a, value: 10000 }
+                            }));
             cb2();
         }));
     },function(cb2) {
@@ -312,19 +332,15 @@ m.mksend = function(txout,aux,to,change,metadata,cb) {
         // 0.0001 BTC, in which case we might need to bring in more inputs
         // to cover the full amount, so all in all we might need to increase
         // the size of the transaction several times
-        var me = [{
-            output: txout,
-            value: t.txobj.outputs[parseInt(txout.substring(65))].value,
-        }];
         var fee_multiplier = 1,
             fee,
-            out_value = t.outs.map(m.getter('value')).reduce(m.plus,0);
+            out_value = scope.outputs.map(m.getter('value')).reduce(m.plus,0);
         sx.cbuntil(function(cb2) {
             fee = fee_multiplier * 10000;
             m.get_enough_utxo_from_history(h,out_value + fee,eh(cb2,function(utxo) {
-                t.utxo = me.concat(utxo);
-                m.mktx(t.utxo,outputs,eh(cb2,function(tx) {
-                    t.testtx = tx;
+                scope.inputs = scope.spendee.concat(utxo);
+                m.mktx(scope.inputs,scope.outputs,eh(cb2,function(tx) {
+                    scope.testtx = tx;
                     if (Math.ceil((tx.length+2) / 2048) > fee_multiplier) {
                         console.log(fee_multiplier);
                         fee_multiplier = Math.ceil(tx.length / 2048);
@@ -337,19 +353,19 @@ m.mksend = function(txout,aux,to,change,metadata,cb) {
     },function(_,cb2) {
         // Create a new transaction just like the successful one but with
         // the extra funds redirected to the change address
-        var in_value = t.utxo.map(sx.getter('value')).reduce(sx.plus,0),
-            out_value = t.outs.map(sx.getter('value')).reduce(sx.plus,0),
+        var in_value = scope.inputs.map(sx.getter('value')).reduce(sx.plus,0),
+            out_value = scope.outputs.map(sx.getter('value')).reduce(sx.plus,0),
             fee = Math.ceil(t.testtx.length / 2048) * 10000;
         if (in_value < out_value + fee) {
             return cb2("Not enough funds to pay fee");
         }
         else {
-            t.outs[1].value += in_value - out_value - fee;
-            console.log(t.utxo,t.outs);
-            sx.mktx(t.utxo,t.outs,sx.cbsetter(t,'tx',cb2));
+            scope.outputs[1].value += in_value - out_value - fee;
+            m.log("Making tx with inputs and outputs:",scope.inputs,scope.outs,2);
+            sx.mktx(scope.inputs,scope.outputs,sx.cbsetter(scope,'tx',cb2));
         }
 
-    }],eh(cb,function() { cb(null,{tx: t.tx, utxo: t.utxo}) }));
+    }],eh(cb,function() { cb(null,{tx: scope.tx, utxo: scope.utxo}) }));
 }
 
 module.exports = m;
