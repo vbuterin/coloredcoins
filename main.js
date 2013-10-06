@@ -78,7 +78,7 @@ m.log = function(msg1, msg2, etc, priority) {
 // output n: 1111111111111111111114oLvT2
 // output n+1+: metadata
 
-m.mkgenesis = function(h, addresses, metadata, cb) {
+m.mkgenesis = function(h, addresses, change, metadata, cb) {
     if (typeof addresses == 'string') {
         addresses = [addresses];
     }
@@ -112,7 +112,7 @@ m.mkgenesis = function(h, addresses, metadata, cb) {
                 outputs = outputs.concat(maddrs.map(function(x) {
                     return { address: x, value: 10000 }
                 }))
-                .concat({ address: scope.from, value: 10000 }); // Change address (mandatory)
+                .concat({ address: change, value: 10000 }); // Change address (mandatory)
                 sx.cbsetter(scope,'outputs',cb2)(null,outputs);
             }));
         },
