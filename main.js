@@ -82,7 +82,7 @@ m.mkgenesis = function(h, addresses, metadata, cb) {
     if (typeof addresses == 'string') {
         addresses = [addresses];
     }
-    var t = {};
+    var scope = {};
     async.waterfall([
         // Get list of outputs
         function(cb2) {
@@ -112,14 +112,14 @@ m.mkgenesis = function(h, addresses, metadata, cb) {
                 outputs = outputs.concat(maddrs.map(function(x) {
                     return { address: x, value: 10000 }
                 }))
-                .concat({ address: t.from, value: 10000 }); // Change address (mandatory)
-                sx.cbsetter(t,'outputs',cb2)(null,outputs);
+                .concat({ address: scope.from, value: 10000 }); // Change address (mandatory)
+                sx.cbsetter(scope,'outputs',cb2)(null,outputs);
             }));
         },
         // Make a transaction, ensuring that fee = 0.0001 * ceil(txsize / 1024 bytes)
         function(__,cb2) {
-            m.log("Constructing transaction",2);
-            sx.send_to_outputs(h,t.outputs,t.outputs.length-1,cb2);
+            m.log("Constructing transaction",h,scope.outputs,2);
+            sx.send_to_outputs(h,scope.outputs,scope.outputs.length-1,cb2);
         }
     ],cb);
 }
